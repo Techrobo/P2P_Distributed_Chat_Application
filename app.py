@@ -20,11 +20,19 @@ class PeerDiscoveryProtocol:
         return json.dumps({'action': 'register', 'name': name, 'ip': ip, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
     
     @staticmethod
+    def encode_register_reply(name, ip, heartbeat_port, message_port):
+        return json.dumps({'action': 'yes', 'name': name, 'ip': ip, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
+    
+    @staticmethod
     def encode_election(name, id, ip, election_port):
         return json.dumps({'action': 'election', 'name': name, 'id': id, 'ip': ip, 'election_port': election_port}).encode()
-   
+  
     @staticmethod
-    def encode_election_confirmation():
+    def encode_voting(name, id, ip, election_port):
+        return json.dumps({'action': 'voting', 'name': name, 'id': id, 'ip': ip, 'election_port': election_port}).encode() 
+    
+    @staticmethod
+    def encode_voting_result():
         return json.dumps({'action': 'OK'}).encode()
     
     @staticmethod
@@ -63,6 +71,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.is_client = True
         self.is_first = True
         self.is_leader = False
+        self.voting_end_flag = False
         self.client_thread_stop_flag = False
         self.client_registeration_flag = False
         self.timeout = 5  # Timeout for socket operations in seconds
@@ -70,6 +79,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.name = input("Enter your name: ")
 
         self.active_peers = []
+        self.voting_participants = []
 
 ########### START : HELPER METHODS ############
     def generate_unique_id(self):
@@ -112,32 +122,46 @@ class ServerClientProcess(multiprocessing.Process):
                 return True
 ########### END : HELPER METHODS ############
 
+########### START : DECISION FOR PEER ROLE METHODS ############
+    def run(self):
+        # Generate a random delay between 0 and 999 milliseconds
+        random_ms = random.randint(0, 999) / 1000
+        # Sleep for 1 second plus the random milliseconds
+        time.sleep(random_ms)
+        
+        self.base_processes()
+        
+        self.peer_process()
+        
+    def peer_process(self):
+        self.is_client = True
+        self.is_first = True
+        self.is_leader = False
+        self.client_thread_stop_flag = False
+        self.client_registeration_flag = False
+        self.is_client= self.initiate_election()
+        
+        if (self.is_client):
+            print("Election Finished : Peer Act as Client")
+            self.run_client()
+        else:
+            print("Election Finished : Peer Act as Leader")
+            self.run_server()
+    
+
+########### END :  DECISION FOR PEER ROLE METHODS ############
+
 ########### START :VOTING ELECTION METHODS ############
+    
     def base_processes(self):
         print("Base Processes Start")
         election_initiation_thread = threading.Thread(
             target=self.send_election_broadcast_messages)
 
-        election_result_thread= threading.Thread(
-            target=self.handle_election_requests)
-
         election_initiation_thread.start()
 
-        election_result_thread.start()
-
         #election_initiation_thread.join() //This thread is  never ending
-        #election_result_thread.join()
-    
-    def initiate_election(self):
-        print("Starting Election")
 
-        election_process_thread = threading.Thread(
-            target=self.receive_election_broadcast_messages)
-
-        election_process_thread.start()
-
-        election_process_thread.join()
-        return self.is_client
 
                 
     def send_election_broadcast_messages(self):
@@ -152,6 +176,47 @@ class ServerClientProcess(multiprocessing.Process):
                     message, ('<broadcast>', self.broadcast_port))
                 time.sleep(2)
                 #print("Election Process broadcasting on port:", self.broadcast_port)
+   
+    # Always Satrted when running as a client or server
+    def handle_voting_requests(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock:
+            registration_sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            registration_sock.bind((self.ip, self.election_port))
+
+            registration_sock.settimeout(10)
+            while True:
+                try:
+                    data, _ = registration_sock.recvfrom(1024)
+                    decoded_msg = PeerDiscoveryProtocol.decode_message(data)
+                    if decoded_msg['action'] == 'voting':
+                        print(self.name, ": Election Request Received from", decoded_msg['name'])
+                        print(self.name, ": Election Confirmation Sent to ", decoded_msg['name'])     
+                        registration_sock.sendto(PeerDiscoveryProtocol.encode_voting_result(), (decoded_msg['ip'],  decoded_msg['election_port']))
+                        if(not self.is_leader):
+                            # Wait for the thread to finish
+                            print(self.name, ": Finishing Existing Client Registeration", decoded_msg['name'])
+                            self.client_thread_stop_flag = True
+                            #Run again 
+                            self.peer_process()
+                            #Start election
+                        else :
+                            print(self.name, "Already I am Leader, No Election Needed")   
+                            
+                except socket.timeout:
+                    print("Server timed out waiting for voting requests")        
+            
+
+    def initiate_election(self):
+        print("Starting Election")
+
+        election_process_thread = threading.Thread(
+            target=self.receive_election_broadcast_messages)
+
+        election_process_thread.start()
+
+        election_process_thread.join()
+        return self.is_client
                 
     def receive_election_broadcast_messages(self):
         start_time = time.time()  # Record the start time
@@ -168,110 +233,65 @@ class ServerClientProcess(multiprocessing.Process):
                 try:
                     data, _ = election_sock.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
-                    if decoded_msg['action'] == 'election':
+                    if decoded_msg['action'] == 'election' and decoded_msg['name'] != self.name :
+                        print("Found Election Participant :",decoded_msg['name'])
+                        self.is_first = False
                         if(self.id>decoded_msg['id']):
-                            self.is_first = False
-                            self.is_client = self.send_election_request(decoded_msg['ip'], decoded_msg['election_port'])
-                        elif (self.id<decoded_msg['id']):
-                             self.is_first = False
-                            
+                            print("Qualified Voting Participant :",decoded_msg['name'])
+                            self.voting_participants.append({'name':decoded_msg['name'], 'id':decoded_msg['id'], 'ip':decoded_msg['ip'], 'election_port':decoded_msg['election_port']})   
                 except socket.timeout:
                     self.is_first = True    
-                    print("election timed out : Process over")
+                    print("Election Participants Listening Call timed out : Process over")
+        if(len(self.voting_participants)>0):
+            sorted_participants = sorted(self.voting_participants, key=lambda x: x['id'], reverse=False)
+            
+            for participant in sorted_participants:
+                print("Sending Voting Request To ", participant['name'])
+                self.send_election_request_thread(participant['ip'],participant['election_port'])
+                if(self.voting_end_flag):
+                    print("Voting Finished")
+                    self.voting_participants.clear()
                     break
-            if (self.is_first):
-                self.is_client = False
-                self.is_leader = True
-        election_sock.close
+                       
+        elif (self.is_first):
+            self.is_client = False
+            self.is_leader = True
             
-                
-    def send_election_request(self, peer_ip, peer_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock_:
-            registration_sock_.setsockopt(
-                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            registration_sock_.bind((self.ip, self.election_port))
-            registration_sock_.settimeout(15)
-            try:
-                registration_sock_.sendto(PeerDiscoveryProtocol.encode_election(self.name, self.id, self.ip, self.election_port),
-                                          (peer_ip, peer_port))
-                data, _ = registration_sock_.recvfrom(1024)
-                decoded_msg = PeerDiscoveryProtocol.decode_message(data)
-                if(decoded_msg['action']== 'OK'):
-                    print(
-                    f"Received ELection confirmation from peer {peer_ip} : { decoded_msg['action'] }")
-                    #registration_sock_.close()
-                    return True
-
-            except socket.timeout:
-                #registration_sock_.close()
-                print(f"Client timed out waiting for Election Confirmation from peer {peer_ip}")
-                return False
     
-    def handle_election_requests(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock:
-            registration_sock.setsockopt(
-                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            registration_sock.bind((self.ip, self.election_port))
-
-            registration_sock.settimeout(5) 
-            while True:
-                try:
-                    data, _ = registration_sock.recvfrom(1024)
-                    decoded_msg = PeerDiscoveryProtocol.decode_message(data)
-                    if decoded_msg['action'] == 'election':
-                        print(self.name, ": Election Request Received from", decoded_msg['name'])
-                        print(self.name, ": Election Confirmation Sent to ", decoded_msg['name'])     
-                        registration_sock.sendto(PeerDiscoveryProtocol.encode_election_confirmation(), (decoded_msg['ip'],  decoded_msg['election_port']))
-                        if(not self.is_leader):
-                            # Wait for the thread to finish
-                            print(self.name, ": Finishing Existing Client Registeration", decoded_msg['name'])
-                            self.client_thread_stop_flag = True
-                            #Run again 
-                            self.peer_process()
-                            #Start election
-                        else :
-                            print(self.name, "Already I am Leader, No Election Needed")   
-                            
-                except socket.timeout:
-                    print("Server timed out waiting for registration requests")        
-            
-    """
     def send_election_request_thread(self,peer_ip,peer_port):
         registration_thread = threading.Thread(
             target=self.send_election_request, args=(peer_ip,peer_port))
         registration_thread.start()
         registration_thread.join()
-    """
+            
+    def send_election_request(self, peer_ip, peer_port):
+        start_time = time.time()  # Record the start time
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock_:
+            registration_sock_.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            registration_sock_.bind((self.ip, self.election_port))
+           
+            registration_sock_.settimeout(10)
+            while time.time() - start_time < 10:  # Run for 10 seconds
+                #time.sleep(2)
+                try:
+                    registration_sock_.sendto(PeerDiscoveryProtocol.encode_voting(self.name, self.id, self.ip, self.election_port),
+                                            (peer_ip, peer_port))
+                    data, _ = registration_sock_.recvfrom(1024)
+                    decoded_msg = PeerDiscoveryProtocol.decode_message(data)
+                    if( decoded_msg['action'] == 'OK'):
+                        print("Received voting confirmation from peer")
+                        self.is_client = True
+                        self.voting_end_flag = True
+                        return
+                        
+                except socket.timeout:
+                    print("No Voting Confirmation received confirmation from peer")
+                    self.is_client = False   
+
         
 ########### END :VOTING ELECTION METHODS ############
             
-
-########### START : DECISION FOR PEER ROLE METHODS ############
-    def peer_process(self):
-        self.is_client = True
-        self.is_first = True
-        self.is_leader = False
-        self.client_thread_stop_flag = False
-        self.client_registeration_flag = False
-        self.is_client= self.initiate_election()
-        if (self.is_client):
-            self.run_client()
-        else:
-            self.run_server()
-
-    def run(self):
-        # Generate a random delay between 0 and 999 milliseconds
-        random_ms = random.randint(0, 999) / 1000
-        # Sleep for 1 second plus the random milliseconds
-        time.sleep(random_ms)
-        
-        self.base_processes()
-        
-        self.peer_process()
-    
-
-########### END :  DECISION FOR PEER ROLE METHODS ############
-
 
 ########### START : SERVER (LEADER) METHODS ############
 
@@ -299,15 +319,23 @@ class ServerClientProcess(multiprocessing.Process):
                 try:
                     data, _ = registration_sock.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
-                    if decoded_msg['action'] == 'register':
+                    if decoded_msg['action'] == 'yes':
                         self.active_peers.append({'name': decoded_msg['name'], 'status': 'registered', 'ip': decoded_msg['ip'],
                                                  'heartbeat_port': decoded_msg['heartbeat_port'], 'message_port': decoded_msg['message_port']})
                         registration_sock.sendto(PeerDiscoveryProtocol.encode_register_confirmation(
                         ), (decoded_msg['ip'],  decoded_msg['heartbeat_port']))
                         print(
                             f"Registered peer: {decoded_msg['name']} : {decoded_msg['ip']} :{decoded_msg['heartbeat_port']}")
+                        time.sleep(2)                
                 except socket.timeout:
                     print("Server timed out waiting for registration requests")
+                except ConnectionResetError as e:
+                     print("ConnectionResetError:", e)
+                     # Handle the error or perform cleanup actions
+                     # # Close the socket to release system resources
+                     registration_sock.close()
+                     return
+                    
 
     def run_server(self):
         print("Peer is First Node , Acting as a Server(Leader)")
@@ -315,12 +343,16 @@ class ServerClientProcess(multiprocessing.Process):
             target=self.send_discovery_broadcast_messages)
         registration_thread = threading.Thread(
             target=self.handle_registration_requests)
+        election_result_thread= threading.Thread(
+            target=self.handle_voting_requests)
 
         broadcast_thread.start()
         registration_thread.start()
+        election_result_thread.start()
 
         #broadcast_thread.join() //Never ending
         #registration_thread.join()
+        #election_result_thread.join()
 
   ########### END : SERVER (LEADER) METHODS ############
 
@@ -333,9 +365,8 @@ class ServerClientProcess(multiprocessing.Process):
             registration_sock_.bind((self.ip, self.heartbeat_port))
             registration_sock_.settimeout(5)
             while True :
-                #time.sleep(2)
                 try:
-                    registration_sock_.sendto(PeerDiscoveryProtocol.encode_register(self.name, self.ip, self.heartbeat_port, self.message_port),
+                    registration_sock_.sendto(PeerDiscoveryProtocol.encode_register_reply(self.name, self.ip, self.heartbeat_port, self.message_port),
                                               (self.server_ip,  self.server_heartbeat_port))
                     data, _ = registration_sock_.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
@@ -343,6 +374,7 @@ class ServerClientProcess(multiprocessing.Process):
                         #print(
                         #    f"Received confirmation from server {self.server_ip} : { decoded_msg['action'] }")
                         self.client_registeration_flag = True
+                    time.sleep(2)
                         
                 except socket.timeout:
                     print("Client timed out waiting for Server Registeration Confirmation, Leader Dead ")
@@ -352,6 +384,12 @@ class ServerClientProcess(multiprocessing.Process):
                     self.client_registeration_flag = False
                     return
                     #Start election
+                except ConnectionResetError as e:
+                    print("ConnectionResetError:", e)
+                    # Handle the error or perform cleanup actions
+                    # # Close the socket to release system resources
+                    registration_sock_.close()
+                    return
             #registration_sock_.close()
 
     def send_registration_thread(self):
@@ -378,7 +416,7 @@ class ServerClientProcess(multiprocessing.Process):
                     data, _ = client_sock.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
 
-                    if (decoded_msg['action'] == 'register' and not self.client_registeration_flag):
+                    if (decoded_msg['action'] == 'register' and decoded_msg['name'] != self.name and not self.client_registeration_flag):
                         print(
                             f"Received registration broadcast message from server { decoded_msg['name'] }")
                         self.server_ip = decoded_msg['ip']
@@ -397,10 +435,15 @@ class ServerClientProcess(multiprocessing.Process):
 
         broadcast_thread = threading.Thread(
             target=self.receive_discovery_broadcast_messages)
+        election_result_thread= threading.Thread(
+            target=self.handle_voting_requests)
+
+        election_result_thread.start()
 
         broadcast_thread.start()
 
         broadcast_thread.join()
+        election_result_thread.join()
 
     ########### END : CLIENT METHODS ############
 
