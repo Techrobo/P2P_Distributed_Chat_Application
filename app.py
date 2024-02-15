@@ -72,8 +72,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.is_first = True
         self.is_leader = False
         self.voting_end_flag = False
-        self.client_thread_stop_flag = False
-        self.client_registeration_flag = False
+        self.demand_election = False
         self.timeout = 5  # Timeout for socket operations in seconds
         # "User_".join(self.generate_hash())
         self.name = input("Enter your name: ")
@@ -137,8 +136,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.is_client = True
         self.is_first = True
         self.is_leader = False
-        self.client_thread_stop_flag = False
-        self.client_registeration_flag = False
+        self.demand_election = False
         self.is_client= self.initiate_election()
         
         if (self.is_client):
@@ -177,7 +175,7 @@ class ServerClientProcess(multiprocessing.Process):
                 time.sleep(2)
                 #print("Election Process broadcasting on port:", self.broadcast_port)
    
-    # Always Satrted when running as a client or server
+    # Always Started when running as a client or server
     def handle_voting_requests(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock:
             registration_sock.setsockopt(
@@ -186,6 +184,11 @@ class ServerClientProcess(multiprocessing.Process):
 
             registration_sock.settimeout(10)
             while True:
+                # client_sock.settimeout(5)
+                if(self.demand_election):
+                    registration_sock.close()
+                    time.sleep(2)  # Wait for the socket to close
+                    return
                 try:
                     data, _ = registration_sock.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
@@ -196,15 +199,21 @@ class ServerClientProcess(multiprocessing.Process):
                         if(not self.is_leader):
                             # Wait for the thread to finish
                             print(self.name, ": Finishing Existing Client Registeration", decoded_msg['name'])
-                            self.client_thread_stop_flag = True
-                            #Run again 
-                            self.peer_process()
-                            #Start election
+                            self.demand_election = True
+                            registration_sock.close()
+                            time.sleep(2)  # Wait for the socket to close
+                            return
                         else :
                             print(self.name, "Already I am Leader, No Election Needed")   
                             
                 except socket.timeout:
-                    print("Server timed out waiting for voting requests")        
+                    print("Server timed out waiting for voting requests") 
+                except ConnectionResetError as e:
+                     print("ConnectionResetError in handle_voting_requests:", e)
+                     # Handle the error or perform cleanup actions
+                     # # Close the socket to release system resources
+                     registration_sock.close()
+                     return       
             
 
     def initiate_election(self):
@@ -242,6 +251,13 @@ class ServerClientProcess(multiprocessing.Process):
                 except socket.timeout:
                     self.is_first = True    
                     print("Election Participants Listening Call timed out : Process over")
+                except ConnectionResetError as e:
+                     print("ConnectionResetError in receive_election_broadcast_messages:", e)
+                     # Handle the error or perform cleanup actions
+                     # # Close the socket to release system resources
+                     election_sock.close()
+                     return  
+                
         if(len(self.voting_participants)>0):
             sorted_participants = sorted(self.voting_participants, key=lambda x: x['id'], reverse=False)
             
@@ -253,9 +269,10 @@ class ServerClientProcess(multiprocessing.Process):
                     self.voting_participants.clear()
                     break
                        
-        elif (self.is_first):
+        elif (not self.is_first):
             self.is_client = False
             self.is_leader = True
+            
             
     
     def send_election_request_thread(self,peer_ip,peer_port):
@@ -283,11 +300,21 @@ class ServerClientProcess(multiprocessing.Process):
                         print("Received voting confirmation from peer")
                         self.is_client = True
                         self.voting_end_flag = True
+                        registration_sock_.close()
+                        time.sleep(2)  # Wait for the socket to close
                         return
                         
                 except socket.timeout:
                     print("No Voting Confirmation received confirmation from peer")
-                    self.is_client = False   
+                    self.is_client = False
+               
+                except ConnectionResetError as e:
+                     print("ConnectionResetError in send_election_request:", e)
+                     # Handle the error or perform cleanup actions
+                     # # Close the socket to release system resources
+                     registration_sock_.close()
+                     return     
+                
 
         
 ########### END :VOTING ELECTION METHODS ############
@@ -330,7 +357,7 @@ class ServerClientProcess(multiprocessing.Process):
                 except socket.timeout:
                     print("Server timed out waiting for registration requests")
                 except ConnectionResetError as e:
-                     print("ConnectionResetError:", e)
+                     print("ConnectionResetError in handle_registeration_requests:", e)
                      # Handle the error or perform cleanup actions
                      # # Close the socket to release system resources
                      registration_sock.close()
@@ -351,7 +378,7 @@ class ServerClientProcess(multiprocessing.Process):
         election_result_thread.start()
 
         #broadcast_thread.join() //Never ending
-        #registration_thread.join()
+        registration_thread.join()
         #election_result_thread.join()
 
   ########### END : SERVER (LEADER) METHODS ############
@@ -365,6 +392,11 @@ class ServerClientProcess(multiprocessing.Process):
             registration_sock_.bind((self.ip, self.heartbeat_port))
             registration_sock_.settimeout(5)
             while True :
+                # client_sock.settimeout(5)
+                if(self.demand_election):
+                    registration_sock_.close()
+                    time.sleep(2)  # Wait for the socket to close
+                    return
                 try:
                     registration_sock_.sendto(PeerDiscoveryProtocol.encode_register_reply(self.name, self.ip, self.heartbeat_port, self.message_port),
                                               (self.server_ip,  self.server_heartbeat_port))
@@ -380,12 +412,13 @@ class ServerClientProcess(multiprocessing.Process):
                     print("Client timed out waiting for Server Registeration Confirmation, Leader Dead ")
                     # Wait for the thread to finish
                     print(self.name, ": Finishing Existing Client Registeration")
-                    self.client_thread_stop_flag = True
-                    self.client_registeration_flag = False
+                    self.demand_election = True
+                    registration_sock_.close()
+                    time.sleep(2)  # Wait for the socket to close
                     return
                     #Start election
                 except ConnectionResetError as e:
-                    print("ConnectionResetError:", e)
+                    print("ConnectionResetError in send_registeration_requests:", e)
                     # Handle the error or perform cleanup actions
                     # # Close the socket to release system resources
                     registration_sock_.close()
@@ -397,7 +430,6 @@ class ServerClientProcess(multiprocessing.Process):
             target=self.send_registration_request)
         registration_thread.start()
         registration_thread.join() #Regiteration thread finished due to leader dead timeout
-        self.peer_process()
 
     def receive_discovery_broadcast_messages(self):
         # Set up a socket for receiving broadcast messages
@@ -409,14 +441,15 @@ class ServerClientProcess(multiprocessing.Process):
 
             while True:
                 # client_sock.settimeout(5)
-                if(self.client_thread_stop_flag):
-                    client_sock.close
+                if(self.demand_election):
+                    client_sock.close()
+                    time.sleep(2)  # Wait for the socket to close
                     return
                 try:
                     data, _ = client_sock.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
 
-                    if (decoded_msg['action'] == 'register' and decoded_msg['name'] != self.name and not self.client_registeration_flag):
+                    if (decoded_msg['action'] == 'register' and decoded_msg['name'] != self.name):
                         print(
                             f"Received registration broadcast message from server { decoded_msg['name'] }")
                         self.server_ip = decoded_msg['ip']
@@ -428,6 +461,13 @@ class ServerClientProcess(multiprocessing.Process):
 
                 except socket.timeout:
                     print("Client timed out waiting for broadcast messages")
+                
+                except ConnectionResetError as e:
+                     print("ConnectionResetError in send_election_request:", e)
+                     # Handle the error or perform cleanup actions
+                     # # Close the socket to release system resources
+                     client_sock.close()
+                     return    
 
     def run_client(self):
         print("Peer is Acting as client")
@@ -444,6 +484,9 @@ class ServerClientProcess(multiprocessing.Process):
 
         broadcast_thread.join()
         election_result_thread.join()
+        if(self.demand_election):
+             self.peer_process()
+            
 
     ########### END : CLIENT METHODS ############
 
