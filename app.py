@@ -65,6 +65,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.message_port = self.get_available_port()
         self.election_port = self.get_available_port()
         self.broadcast_port = 12345
+        self.broadcast_ip = self.get_broadcast_ip()
         self.server_ip = None
         self.server_heartbeat_port = None
         self.server_message_port = None
@@ -81,6 +82,32 @@ class ServerClientProcess(multiprocessing.Process):
         self.voting_participants = []
 
 ########### START : HELPER METHODS ############
+    def get_broadcast_ip(self):
+        try:
+            # Get the local IP address
+            local_ip = self.ip
+
+            # Get the subnet mask
+            subnet_mask = self.get_subnet_mask()
+            print("Subnet Mask : ",subnet_mask)
+
+            if local_ip and subnet_mask:
+                # Calculate the network address
+                network_address = '.'.join(str(int(local_ip.split('.')[i]) & int(subnet_mask.split('.')[i])) for i in range(4))
+
+                # Calculate the broadcast address
+                broadcast_address = '.'.join(str(int(network_address.split('.')[i]) | (255 - int(subnet_mask.split('.')[i]))) for i in range(4))
+                print("Broadcast IP :" , broadcast_address)
+                return broadcast_address
+            else:
+                return None
+        except Exception as e:
+            print("Error:", e)
+            return None
+    
+    def get_subnet_mask(self):
+        return '255.255.255.0'
+    
     def get_ip_address(self):
         # Create a socket object
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -89,10 +116,11 @@ class ServerClientProcess(multiprocessing.Process):
             s.connect(('8.8.8.8', 80))
             # Get the local IP address
             ip_address = s.getsockname()[0]
-            print(ip_address)
+            print("IP Address : ",ip_address)
         finally:
             # Close the socket
             s.close()
+        
         return ip_address
 
     def generate_multicast_group(self):
@@ -200,7 +228,7 @@ class ServerClientProcess(multiprocessing.Process):
 
             while True:
                 broadcast_sock.sendto(
-                    message, ('<broadcast>', self.broadcast_port))
+                    message, (self.broadcast_ip, self.broadcast_port))
                 time.sleep(2)
                 #print("Election Process broadcasting on port:", self.broadcast_port)
    
@@ -360,7 +388,7 @@ class ServerClientProcess(multiprocessing.Process):
 
             while True:
                 broadcast_sock.sendto(
-                    message, ('<broadcast>', self.broadcast_port))
+                    message, (self.broadcast_ip, self.broadcast_port))
                 time.sleep(2)
                 print("Server broadcasting on port:", self.broadcast_port)
 
