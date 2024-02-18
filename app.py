@@ -1,4 +1,4 @@
-import multiprocessing
+from multiprocessing  import Process, Lock
 import socket
 import threading
 import time
@@ -56,7 +56,7 @@ class PeerDiscoveryProtocol:
         return json.loads(data.decode())
 
 
-class ServerClientProcess(multiprocessing.Process):
+class ServerClientProcess(Process):
     def __init__(self):
         super(ServerClientProcess, self).__init__()
         self.id = self.generate_unique_id()
@@ -80,6 +80,14 @@ class ServerClientProcess(multiprocessing.Process):
 
         self.active_peers = []
         self.voting_participants = []
+        
+        #Multicast Variables
+        self.vector_clock = {self.id: 0}
+        self.hold_back_queue = []
+        self.message_history_buffer = dict({})
+        self.displayed_own_message = set()
+        self.lock = Lock()
+        self.client_registeration_flag = False 
 
 ########### START : HELPER METHODS ############
     def get_broadcast_ip(self):
@@ -194,6 +202,7 @@ class ServerClientProcess(multiprocessing.Process):
         self.is_first = True
         self.is_leader = False
         self.demand_election = False
+        self.client_registeration_flag = False
         self.is_client= self.initiate_election()
         
         if (self.is_client):
@@ -375,6 +384,217 @@ class ServerClientProcess(multiprocessing.Process):
 
         
 ########### END :VOTING ELECTION METHODS ############
+
+  ########### START : MULTICAST METHODS ############
+  
+  #Sending Multicast#
+  
+    def test_multicast(self):
+        count = 0
+        num_list = [15, 20, 25, 30]
+        while True:
+            if(not self.client_registeration_flag) :
+                continue
+            if(self.demand_election):
+                #listen_sock.close()
+                time.sleep(2)  # Wait for the socket to close
+                return
+            time.sleep(random.choice(num_list))
+            count += 1
+            message = f"{count}: Hello from {self.name} with ID: {self.id}"
+            print (message)
+            self.send_multicast(message, "normal", "224.0.0.2", 7000)
+            
+    def send_multicast(self, message, message_type, multicast_group, port):
+        multicast_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        #set the time-to-live to binary format, and restrict the hops to the LAN
+        ttl = struct.pack('b', 1)
+        multicast_send_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+        
+        #serialize message & increment vector clock before send event
+        json_msg = self.send_event_vector(message, message_type)
+        try:
+            multicast_send_socket.sendto(str.encode(json_msg), (multicast_group, port))
+        except Exception as e:
+            print(e)
+   
+    def send_event_vector(self, message, message_type):
+        
+        if message_type == "NACK":
+            #serialize message before sending
+            print("sending nack message...")
+            serialized_message = json.dumps({
+                'content': message,
+                'vector_clock': self.vector_clock,
+                'sender_id': self.id,
+                'type': message_type
+            })
+
+        elif message_type == "normal":
+            #increament vector clock before send event
+            print("sending normal message...")
+            self.lock.acquire()
+            self.vector_clock[self.id] += 1
+            self.lock.release()
+
+            #serialize message before sending
+            serialized_message = json.dumps({
+                'content': message,
+                'vector_clock': self.vector_clock,
+                'sender_id': self.id,
+                'type': message_type
+            })
+
+            #add outgoing message to peer's history buffer
+            self.message_history_buffer[self.vector_clock[self.id]] = serialized_message
+            
+            #print("current history buffer: ", self.message_history_buffer)
+
+        return serialized_message
+    
+    #Receiving Multicast#
+    
+    def listen_for_multicast(self, ip, port, multicast_group):
+        listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        listen_sock.bind((ip, port))
+
+        #configure the socket to join a multicast group, listens on any available interface
+        group = socket.inet_aton(multicast_group)
+        mreq = struct.pack('4sL', group, socket.INADDR_ANY)
+        listen_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+        print("listening for multicast...")
+
+        while True:
+            if(not self.client_registeration_flag) :
+                continue
+            if(self.demand_election):
+                listen_sock.close()
+                time.sleep(2)  # Wait for the socket to close
+                return
+            msg, addr = listen_sock.recvfrom(1024)
+
+            if msg:
+                data = json.loads(msg.decode())
+                #print(f"'{data['content']}' received from {data['sender_id']} with timestamp: {data['vector_clock']}")
+                self.rec_event_vector(data['content'], data['vector_clock'], data['sender_id'], data['type'])
+                #print(f"My new timestamp is: {self.vector_clock}")
+                
+    def rec_event_vector(self, received_message, received_vector_clock, sender_id, received_message_type):
+        #print(message_rejection_test)
+
+        if sender_id not in self.vector_clock:
+            # When a message is recieved from a peer for the first time, initialise its timestamp.
+            self.vector_clock[sender_id] = received_vector_clock[sender_id] - 1
+            self.deliver(received_message, received_vector_clock, sender_id)
+        
+        #check if incoming multicast is a negative acknowledgement
+        if received_message_type == "NACK":
+            if sender_id != self.id:
+                print("received nack message")
+                try:
+                    self.lock.acquire()
+                    if received_vector_clock[self.id] < self.vector_clock[self.id]:
+                        #the requester is missing a message that has been sent
+                        next_sequence_number = received_vector_clock[self.id] + 1
+                        if next_sequence_number in self.message_history_buffer: 
+                            print(f"Resending message with sequence number: {next_sequence_number}")
+                            #resend next unreceived message
+                            missed_message = self.message_history_buffer[next_sequence_number]
+                            self.resend_missed_message(missed_message, "224.0.0.2", 7000)
+                        else:
+                            print(f"No message found with sequence number: {next_sequence_number}")
+                except Exception as e:
+                    print(f"Error while handling NACK: {e}")
+                finally:
+                    self.lock.release()
+                    
+        elif received_message_type == "normal":
+            if sender_id == self.id:
+                if received_vector_clock[self.id] not in self.displayed_own_message:
+                    #Display message to the standard output
+                    print(f"Delivered message: '{received_message}' with vector clock: {received_vector_clock} from {sender_id}")
+                    self.displayed_own_message.add(received_vector_clock[self.id])
+                    print(f"displaed my message list: {self.displayed_own_message}")
+                else:
+                    print(f"Already displayed my own message with identifier: {received_vector_clock[self.id]}")
+            
+            else:
+    
+                self.lock.acquire()
+                if self.can_deliver(received_vector_clock, sender_id):
+                    self.deliver(received_message, received_vector_clock, sender_id)
+                    # Check the hold-back queue for any message that can now be delivered
+                    self.check_hold_back_queue()
+                else:
+                    #first check hold back queue for potentially deliverable messages
+                    self.check_hold_back_queue()
+                    #add it to the hold-back queue
+                    self.hold_back_queue.append({
+                        'content': received_message,
+                        'vector_clock': received_vector_clock,
+                        'sender_id': sender_id,
+                        'type': received_message_type
+                    }) 
+                self.lock.release()
+
+    def deliver(self, message, received_vector_clock, sender_id):
+        #Increament the appropriate element of the vector clock
+        self.vector_clock[sender_id] += 1
+        #Display message to the standard output
+        print(f"Delivered message: '{message}' with vector clock: {received_vector_clock} from {sender_id}")   
+        
+    def resend_missed_message(self, message, multicast_group, port):
+        #Function to resend a missed messsage
+        try:
+            multicast_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            ttl = struct.pack('b', 1)
+            multicast_send_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+            multicast_send_socket.sendto(str.encode(message), (multicast_group, port))
+            print("Missed message resent.")
+        except Exception as e:
+            print(e)
+        finally:
+            multicast_send_socket.close()
+            
+    def can_deliver(self, received_vector_clock, sender_id):
+        # Check the condition for delivery
+        #self.lock.acquire()  # Ensure mutual exclusion when accessing shared state
+        try:
+            # Check if the message is from the sender and is the next expected message
+            if received_vector_clock[sender_id] == self.vector_clock[sender_id] + 1:
+                # It's the next expected message, we can potentially deliver this
+                for peer, timestamp in received_vector_clock.items():
+                    if peer != sender_id:
+                        if timestamp > self.vector_clock[peer]:
+                            # There is a message from some other peer that we have not processed yet
+                            return False
+                # If we reach here, the message satisfies causal delivery conditions
+                return True
+            elif received_vector_clock[sender_id] <= self.vector_clock[sender_id]:
+                # It's an old or duplicate message, discard
+                return False
+            else:
+                # There's a gap, so we're missing some messages from this sender
+                if sender_id != self.id:  # Don't NACK our own messages
+                    self.send_multicast('', "NACK", "224.0.0.2", 7000)
+                return False
+        except:
+            pass
+        
+    def check_hold_back_queue(self):
+        #check for message in the hold-back queue that can now be delivered
+        for message in self.hold_back_queue:
+            if self.can_deliver(message['vector_clock'], message['sender_id']):
+                self.deliver(message['content'], message['vector_clock'], message['sender_id'])
+                self.hold_back_queue.remove(message)
+   
+                
+ ########### END : MULTICAST METHODS ############
             
 
 ########### START : SERVER (LEADER) METHODS ############
@@ -410,7 +630,7 @@ class ServerClientProcess(multiprocessing.Process):
                         ), (decoded_msg['ip'],  decoded_msg['heartbeat_port']))
                         print(
                             f"Registered peer: {decoded_msg['name']} : {decoded_msg['ip']} :{decoded_msg['heartbeat_port']}")
-                        time.sleep(2)                
+                        time.sleep(2)              
                 except socket.timeout:
                     print("Server timed out waiting for registration requests")
                 except ConnectionResetError as e:
@@ -429,18 +649,33 @@ class ServerClientProcess(multiprocessing.Process):
             target=self.handle_registration_requests)
         election_result_thread= threading.Thread(
             target=self.handle_voting_requests)
+        
+        #Multicast Send Thread Start
+        #multicast_send_thread = threading.Thread(target=self.test_multicast)
+        #Multicast Receive Thread Start
+        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        
+        #multicast_send_thread.start()
+        #multicast_receive_thread.start()
+
 
         broadcast_thread.start()
         registration_thread.start()
         election_result_thread.start()
 
+
+        #Mulicast Send Thread End
+        #multicast_send_thread.join()
+        #Multicast Receive Thread End
+        #multicast_receive_thread.join()
         #broadcast_thread.join() //Never ending
         registration_thread.join()
         #election_result_thread.join()
 
   ########### END : SERVER (LEADER) METHODS ############
 
-  ########### START : CLIENT METHODS ############
+ 
+ ########### START : CLIENT METHODS ############
 
     def send_registration_request(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock_:
@@ -463,6 +698,7 @@ class ServerClientProcess(multiprocessing.Process):
                         #print(
                         #    f"Received confirmation from server {self.server_ip} : { decoded_msg['action'] }")
                         self.client_registeration_flag = True
+                        
                     time.sleep(2)
                         
                 except socket.timeout:
@@ -549,13 +785,26 @@ class ServerClientProcess(multiprocessing.Process):
             target=self.receive_discovery_broadcast_messages)
         election_result_thread= threading.Thread(
             target=self.handle_voting_requests)
+        
+        #Multicast Send Thread Start
+        multicast_send_thread = threading.Thread(target=self.test_multicast)
+        #Multicast Receive Thread Start
+        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
 
         election_result_thread.start()
 
         broadcast_thread.start()
+        
+        multicast_send_thread.start()
+        multicast_receive_thread.start()
 
         broadcast_thread.join()
         election_result_thread.join()
+        #Mulicast Send Thread End
+        multicast_send_thread.join()
+        #Multicast Receive Thread End
+        multicast_receive_thread.join()
+       
         if(self.demand_election):
              self.peer_process()
             
