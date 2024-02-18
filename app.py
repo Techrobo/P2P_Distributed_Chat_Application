@@ -67,7 +67,7 @@ class ServerClientProcess(Process):
         self.election_port = self.get_available_port()
         self.broadcast_port = 12345
         self.broadcast_ip = self.get_broadcast_ip()
-        self.multicast_address = self.generate_multicast_group()
+        self.multicast_address = '224.0.0.1' #self.generate_multicast_group()
         self.multicast_group = None
         self.server_ip = None
         self.server_heartbeat_port = None
@@ -653,7 +653,9 @@ class ServerClientProcess(Process):
 
     def run_server(self):
         print("Peer is First Node , Acting as a Server(Leader)")
-        #self.client_registeration_flag=True
+        self.client_registeration_flag=True
+        self.server_heartbeat_port = self.heartbeat_port
+        self.multicast_group =self.multicast_address
         broadcast_thread = threading.Thread(
             target=self.send_discovery_broadcast_messages)
         registration_thread = threading.Thread(
@@ -662,12 +664,12 @@ class ServerClientProcess(Process):
             target=self.handle_voting_requests)
         
         #Multicast Send Thread Start
-        #multicast_send_thread = threading.Thread(target=self.test_multicast)
+        multicast_send_thread = threading.Thread(target=self.test_multicast)
         #Multicast Receive Thread Start
-        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
         
-        #multicast_send_thread.start()
-        #multicast_receive_thread.start()
+        multicast_send_thread.start()
+        multicast_receive_thread.start()
 
 
         broadcast_thread.start()
