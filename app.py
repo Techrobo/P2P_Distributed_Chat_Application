@@ -16,12 +16,12 @@ class PeerDiscoveryProtocol:
     # Define message formats for registration, deregistration, and querying active peers.
     # Implement basic message parsing functions
     @staticmethod
-    def encode_register(name, id, ip, heartbeat_port, message_port):
-        return json.dumps({'action': 'register', 'name': name,'id': id, 'ip': ip, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
+    def encode_register(name, id, ip, registeration_port, heartbeat_port, message_port):
+        return json.dumps({'action': 'register', 'name': name,'id': id, 'ip': ip, 'registeration_port': registeration_port, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
     
     @staticmethod
-    def encode_register_reply(name, id, ip, heartbeat_port, message_port):
-        return json.dumps({'action': 'yes', 'name': name,'id': id, 'ip': ip, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
+    def encode_register_reply(name, id, ip, registeration_port, heartbeat_port, message_port):
+        return json.dumps({'action': 'yes', 'name': name,'id': id, 'ip': ip, 'registeration_port': registeration_port,  'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
     
     @staticmethod
     def encode_election(name, id, ip, election_port):
@@ -36,8 +36,8 @@ class PeerDiscoveryProtocol:
         return json.dumps({'action': 'OK'}).encode()
     
     @staticmethod
-    def encode_deregister(name, heartbeat_port, message_port):
-        return json.dumps({'action': 'deregister', 'name': name, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
+    def encode_deregister(name, registeration_port, message_port):
+        return json.dumps({'action': 'deregister', 'name': name, 'registeration_port': registeration_port, 'message_port':  message_port}).encode()
 
     @staticmethod
     def encode_register_confirmation():
@@ -49,7 +49,7 @@ class PeerDiscoveryProtocol:
 
     @staticmethod
     def encode_heartbeat(name, ip, heartbeat_port):
-        return json.dumps({'action': 'heartbeat', 'name': name, 'ip': ip, 'port':  heartbeat_port, }).encode()
+        return json.dumps({'action': 'heartbeat', 'name': name, 'ip': ip, 'heartbeat_port':  heartbeat_port, }).encode()
 
     @staticmethod
     def decode_message(data):
@@ -62,12 +62,14 @@ class ServerClientProcess(Process):
         self.id = self.generate_unique_id()
         self.ip =  self.get_ip_address() #socket.gethostbyname(socket.gethostname())
         self.heartbeat_port = self.get_available_port()
+        self.registeration_port = self.get_available_port()
         self.message_port = self.get_available_port()
         self.election_port = self.get_available_port()
         self.broadcast_port = 12345
         self.broadcast_ip = self.get_broadcast_ip()
         self.server_ip = None
         self.server_heartbeat_port = None
+        self.server_registeration_port = None
         self.server_message_port = None
         self.is_client = True
         self.is_first = True
@@ -604,7 +606,7 @@ class ServerClientProcess(Process):
             broadcast_sock.setsockopt(
                 socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             message = PeerDiscoveryProtocol.encode_register(
-                self.name, self.id, self.ip, self.heartbeat_port, self.message_port)
+                self.name, self.id, self.ip, self.registeration_port,self.heartbeat_port, self.message_port)
 
             while True:
                 broadcast_sock.sendto(
@@ -616,7 +618,7 @@ class ServerClientProcess(Process):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock:
             registration_sock.setsockopt(
                 socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            registration_sock.bind((self.ip, self.heartbeat_port))
+            registration_sock.bind((self.ip, self.registeration_port))
 
             registration_sock.settimeout(10) 
             while True:
@@ -625,11 +627,11 @@ class ServerClientProcess(Process):
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
                     if decoded_msg['action'] == 'yes':
                         self.active_peers.append({'name': decoded_msg['name'], 'status': 'registered', 'ip': decoded_msg['ip'],
-                                                 'heartbeat_port': decoded_msg['heartbeat_port'], 'message_port': decoded_msg['message_port']})
+                                                 'registeration_port': decoded_msg['registeration_port'],'heartbeat_port': decoded_msg['heartbeat_port'], 'message_port': decoded_msg['message_port']})
                         registration_sock.sendto(PeerDiscoveryProtocol.encode_register_confirmation(
-                        ), (decoded_msg['ip'],  decoded_msg['heartbeat_port']))
+                        ), (decoded_msg['ip'],  decoded_msg['registeration_port']))
                         print(
-                            f"Registered peer: {decoded_msg['name']} : {decoded_msg['ip']} :{decoded_msg['heartbeat_port']}")
+                            f"Registered peer: {decoded_msg['name']} : {decoded_msg['ip']} :{decoded_msg['registeration_port']}")
                         time.sleep(2)              
                 except socket.timeout:
                     print("Server timed out waiting for registration requests")
@@ -643,6 +645,7 @@ class ServerClientProcess(Process):
 
     def run_server(self):
         print("Peer is First Node , Acting as a Server(Leader)")
+        self.client_registeration_flag=True
         broadcast_thread = threading.Thread(
             target=self.send_discovery_broadcast_messages)
         registration_thread = threading.Thread(
@@ -651,12 +654,12 @@ class ServerClientProcess(Process):
             target=self.handle_voting_requests)
         
         #Multicast Send Thread Start
-        #multicast_send_thread = threading.Thread(target=self.test_multicast)
+        multicast_send_thread = threading.Thread(target=self.test_multicast)
         #Multicast Receive Thread Start
-        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
         
-        #multicast_send_thread.start()
-        #multicast_receive_thread.start()
+        multicast_send_thread.start()
+        multicast_receive_thread.start()
 
 
         broadcast_thread.start()
@@ -665,9 +668,9 @@ class ServerClientProcess(Process):
 
 
         #Mulicast Send Thread End
-        #multicast_send_thread.join()
+        multicast_send_thread.join()
         #Multicast Receive Thread End
-        #multicast_receive_thread.join()
+        multicast_receive_thread.join()
         #broadcast_thread.join() //Never ending
         registration_thread.join()
         #election_result_thread.join()
@@ -681,7 +684,7 @@ class ServerClientProcess(Process):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as registration_sock_:
             registration_sock_.setsockopt(
                 socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            registration_sock_.bind((self.ip, self.heartbeat_port))
+            registration_sock_.bind((self.ip, self.registeration_port))
             registration_sock_.settimeout(5)
             while True :
                 # client_sock.settimeout(5)
@@ -690,8 +693,8 @@ class ServerClientProcess(Process):
                     time.sleep(2)  # Wait for the socket to close
                     return
                 try:
-                    registration_sock_.sendto(PeerDiscoveryProtocol.encode_register_reply(self.name,self.id, self.ip, self.heartbeat_port, self.message_port),
-                                              (self.server_ip,  self.server_heartbeat_port))
+                    registration_sock_.sendto(PeerDiscoveryProtocol.encode_register_reply(self.name,self.id, self.ip, self.registeration_port,self.heartbeat_port, self.message_port),
+                                              (self.server_ip,  self.server_registeration_port))
                     data, _ = registration_sock_.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
                     if( decoded_msg['action']=='registered'):
@@ -751,6 +754,7 @@ class ServerClientProcess(Process):
                         print(
                             f"Received registration broadcast message from server { decoded_msg['name'] }")
                         self.server_ip = decoded_msg['ip']
+                        self.server_registeration_port = decoded_msg['registeration_port']
                         self.server_heartbeat_port = decoded_msg['heartbeat_port']
                         # Extract IP and port from server_address
                         self.server_message_port = decoded_msg['message_port']
