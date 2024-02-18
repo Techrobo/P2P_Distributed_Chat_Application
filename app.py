@@ -645,7 +645,7 @@ class ServerClientProcess(Process):
 
     def run_server(self):
         print("Peer is First Node , Acting as a Server(Leader)")
-        self.client_registeration_flag=True
+        #self.client_registeration_flag=True
         broadcast_thread = threading.Thread(
             target=self.send_discovery_broadcast_messages)
         registration_thread = threading.Thread(
@@ -654,12 +654,12 @@ class ServerClientProcess(Process):
             target=self.handle_voting_requests)
         
         #Multicast Send Thread Start
-        multicast_send_thread = threading.Thread(target=self.test_multicast)
+        #multicast_send_thread = threading.Thread(target=self.test_multicast)
         #Multicast Receive Thread Start
-        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
         
-        multicast_send_thread.start()
-        multicast_receive_thread.start()
+        #multicast_send_thread.start()
+        #multicast_receive_thread.start()
 
 
         broadcast_thread.start()
@@ -668,9 +668,9 @@ class ServerClientProcess(Process):
 
 
         #Mulicast Send Thread End
-        multicast_send_thread.join()
+        #multicast_send_thread.join()
         #Multicast Receive Thread End
-        multicast_receive_thread.join()
+        #multicast_receive_thread.join()
         #broadcast_thread.join() //Never ending
         registration_thread.join()
         #election_result_thread.join()
