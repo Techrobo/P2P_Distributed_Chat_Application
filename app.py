@@ -16,8 +16,8 @@ class PeerDiscoveryProtocol:
     # Define message formats for registration, deregistration, and querying active peers.
     # Implement basic message parsing functions
     @staticmethod
-    def encode_register(name, id, ip, registeration_port, heartbeat_port, message_port):
-        return json.dumps({'action': 'register', 'name': name,'id': id, 'ip': ip, 'registeration_port': registeration_port, 'heartbeat_port': heartbeat_port, 'message_port':  message_port}).encode()
+    def encode_register(name, id, ip, registeration_port, heartbeat_port, message_port, multicast_address):
+        return json.dumps({'action': 'register', 'name': name,'id': id, 'ip': ip, 'registeration_port': registeration_port, 'heartbeat_port': heartbeat_port, 'message_port':  message_port,'multicast_address': multicast_address}).encode()
     
     @staticmethod
     def encode_register_reply(name, id, ip, registeration_port, heartbeat_port, message_port):
@@ -67,6 +67,8 @@ class ServerClientProcess(Process):
         self.election_port = self.get_available_port()
         self.broadcast_port = 12345
         self.broadcast_ip = self.get_broadcast_ip()
+        self.multicast_address = self.generate_multicast_group()
+        self.multicast_group = None
         self.server_ip = None
         self.server_heartbeat_port = None
         self.server_registeration_port = None
@@ -146,6 +148,7 @@ class ServerClientProcess(Process):
                 continue  # Skip addresses outside the valid range
             if multicast_address.startswith('224.0') or multicast_address.startswith('224.255'):
                 continue  # Skip reserved addresses
+            print("Multicast Address : ",multicast_address)
             return multicast_address
         
     def generate_unique_id(self):
@@ -405,7 +408,8 @@ class ServerClientProcess(Process):
             count += 1
             message = f"{count}: Hello from {self.name} with ID: {self.id}"
             print (message)
-            self.send_multicast(message, "normal", "224.0.0.2", 7000)
+            #self.send_multicast(message, "normal", "224.0.0.2", 7000)
+            self.send_multicast(message, "normal", self.multicast_group, self.server_heartbeat_port)
             
     def send_multicast(self, message, message_type, multicast_group, port):
         multicast_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -469,7 +473,7 @@ class ServerClientProcess(Process):
         mreq = struct.pack('4sL', group, socket.INADDR_ANY)
         listen_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
-        print("listening for multicast...")
+        print("listening for multicast... at :",multicast_group)
 
         while True:
             if(not self.client_registeration_flag) :
@@ -606,7 +610,7 @@ class ServerClientProcess(Process):
             broadcast_sock.setsockopt(
                 socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             message = PeerDiscoveryProtocol.encode_register(
-                self.name, self.id, self.ip, self.registeration_port,self.heartbeat_port, self.message_port)
+                self.name, self.id, self.ip, self.registeration_port,self.heartbeat_port, self.message_port, self.multicast_address)
 
             while True:
                 broadcast_sock.sendto(
@@ -698,8 +702,21 @@ class ServerClientProcess(Process):
                     data, _ = registration_sock_.recvfrom(1024)
                     decoded_msg = PeerDiscoveryProtocol.decode_message(data)
                     if( decoded_msg['action']=='registered'):
-                        #print(
-                        #    f"Received confirmation from server {self.server_ip} : { decoded_msg['action'] }")
+                        print(
+                            f"Received confirmation from server {self.server_ip} : { decoded_msg['action'] }")
+                        if(not self.client_registeration_flag):
+                            #Multicast Send Thread Start
+                            multicast_send_thread = threading.Thread(target=self.test_multicast)
+                            #Multicast Receive Thread Start
+                            #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+                            multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", self.server_heartbeat_port, self.multicast_group))
+                                    
+                            multicast_send_thread.start()
+                            multicast_receive_thread.start()
+                            #Mulicast Send Thread End
+                            #multicast_send_thread.join()
+                            #Multicast Receive Thread End
+                            #multicast_receive_thread.join()
                         self.client_registeration_flag = True
                         
                     time.sleep(2)
@@ -756,6 +773,7 @@ class ServerClientProcess(Process):
                         self.server_ip = decoded_msg['ip']
                         self.server_registeration_port = decoded_msg['registeration_port']
                         self.server_heartbeat_port = decoded_msg['heartbeat_port']
+                        self.multicast_group = decoded_msg['multicast_address']
                         # Extract IP and port from server_address
                         self.server_message_port = decoded_msg['message_port']
                         #self.send_registration_request()
@@ -791,23 +809,24 @@ class ServerClientProcess(Process):
             target=self.handle_voting_requests)
         
         #Multicast Send Thread Start
-        multicast_send_thread = threading.Thread(target=self.test_multicast)
+        #multicast_send_thread = threading.Thread(target=self.test_multicast)
         #Multicast Receive Thread Start
-        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
+        #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", self.server_heartbeat_port, self.multicast_group))
 
         election_result_thread.start()
 
         broadcast_thread.start()
         
-        multicast_send_thread.start()
-        multicast_receive_thread.start()
+        #multicast_send_thread.start()
+        #multicast_receive_thread.start()
 
         broadcast_thread.join()
         election_result_thread.join()
         #Mulicast Send Thread End
-        multicast_send_thread.join()
+        #multicast_send_thread.join()
         #Multicast Receive Thread End
-        multicast_receive_thread.join()
+        #multicast_receive_thread.join()
        
         if(self.demand_election):
              self.peer_process()
