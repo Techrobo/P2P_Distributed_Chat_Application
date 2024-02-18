@@ -492,12 +492,16 @@ class ServerClientProcess(Process):
                 
     def rec_event_vector(self, received_message, received_vector_clock, sender_id, received_message_type):
         #print(message_rejection_test)
-
         if sender_id not in self.vector_clock:
-            # When a message is recieved from a peer for the first time, initialise its timestamp.
-            self.vector_clock[sender_id] = received_vector_clock[sender_id] - 1
-            self.deliver(received_message, received_vector_clock, sender_id)
-        
+                        # When a message is recieved from a peer for the first time, initialise its timestamp.
+                        for peer, timestamp in received_vector_clock.items():
+                            if peer == sender_id:
+                                self.vector_clock[peer] = timestamp - 1 #self.vector_clock[sender_id] = received_vector_clock[sender_id] - 1
+                            else:
+                                if peer not in self.vector_clock:
+                                    self.vector_clock[peer] = timestamp
+                        self.deliver(received_message, received_vector_clock, sender_id)
+       
         #check if incoming multicast is a negative acknowledgement
         if received_message_type == "NACK":
             if sender_id != self.id:
