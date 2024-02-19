@@ -111,7 +111,7 @@ class ServerClientProcess(Process):
         self.reply_message_queue = reply_message_queue
         self.id = self.generate_unique_id()
         self.ip =  self.get_ip_address() #socket.gethostbyname(socket.gethostname())
-        self.heartbeat_port = self.get_available_port()
+        self.heartbeat_port = 9000 #self.get_available_port()
         self.registeration_port = self.get_available_port()
         self.message_port = self.get_available_port()
         self.election_port = self.get_available_port()
@@ -259,6 +259,12 @@ class ServerClientProcess(Process):
         self.demand_election = False
         self.client_registeration_flag = False
         self.voting_end_flag= False
+        self.multicast_group = None
+        self.server_ip = None
+        self.server_heartbeat_port = None
+        self.server_registeration_port = None
+        self.server_message_port = None
+        
         self.is_client= self.initiate_election()
         
         if (self.is_client):
@@ -484,9 +490,12 @@ class ServerClientProcess(Process):
         #     print (message)
         #     #self.send_multicast(message, "normal", "224.0.0.2", 7000)
         #     self.send_multicast(message, "normal", self.multicast_group, self.server_heartbeat_port)
-        
+        while not self.server_heartbeat_port:
+            print ("Waiting For Registeration before multicast")
+            time.sleep(2)
+            
         count = 0
-
+      
         while True:
             if(not self.client_registeration_flag) :
                 continue
@@ -555,7 +564,17 @@ class ServerClientProcess(Process):
     
     #Receiving Multicast#
     
-    def listen_for_multicast(self, ip, port, multicast_group):
+    #def listen_for_multicast(self, ip, port, multicast_group):
+    def listen_for_multicast(self):
+
+        while not self.server_heartbeat_port :
+            print ("Waiting For Registeration before multicast")
+            time.sleep(2)
+            
+        ip = "0.0.0.0"
+        port = self.server_heartbeat_port
+        multicast_group = self.multicast_group
+        
         listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -758,7 +777,8 @@ class ServerClientProcess(Process):
                     #Multicast Send Thread Start
                     multicast_send_thread = threading.Thread(target=self.test_multicast)
                     #Multicast Receive Thread Start
-                    multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+                    #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+                    multicast_receive_thread = threading.Thread(target=self.listen_for_multicast)
                     multicast_send_thread.start()
                     multicast_receive_thread.start()
                     client_sock.close()
@@ -771,7 +791,8 @@ class ServerClientProcess(Process):
                     #Multicast Send Thread Start
                     multicast_send_thread = threading.Thread(target=self.test_multicast)
                     #Multicast Receive Thread Start
-                    multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+                    #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+                    multicast_receive_thread = threading.Thread(target=self.listen_for_multicast)
         
                     multicast_send_thread.start()
                     multicast_receive_thread.start()
@@ -781,7 +802,8 @@ class ServerClientProcess(Process):
             #Multicast Send Thread Start
             multicast_send_thread = threading.Thread(target=self.test_multicast)
             #Multicast Receive Thread Start
-            multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+            #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0",self.server_heartbeat_port, self.multicast_group))
+            multicast_receive_thread = threading.Thread(target=self.listen_for_multicast)
             multicast_send_thread.start()
             multicast_receive_thread.start()
             client_sock.close()
@@ -888,19 +910,6 @@ class ServerClientProcess(Process):
                     if( decoded_msg['action']=='registered'):
                         print(
                             f"Received confirmation from server {self.server_ip} : { decoded_msg['action'] }")
-                        if(not self.client_registeration_flag):
-                            #Multicast Send Thread Start
-                            multicast_send_thread = threading.Thread(target=self.test_multicast)
-                            #Multicast Receive Thread Start
-                            #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
-                            multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", self.server_heartbeat_port, self.multicast_group))
-                                    
-                            multicast_send_thread.start()
-                            multicast_receive_thread.start()
-                            #Mulicast Send Thread End
-                            #multicast_send_thread.join()
-                            #Multicast Receive Thread End
-                            #multicast_receive_thread.join()
                         self.client_registeration_flag = True
                         
                     time.sleep(2)
@@ -993,24 +1002,25 @@ class ServerClientProcess(Process):
             target=self.handle_voting_requests)
         
         #Multicast Send Thread Start
-        #multicast_send_thread = threading.Thread(target=self.test_multicast)
+        multicast_send_thread = threading.Thread(target=self.test_multicast)
         #Multicast Receive Thread Start
         #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", 7000, "224.0.0.2"))
         #multicast_receive_thread = threading.Thread(target=self.listen_for_multicast, args = ("0.0.0.0", self.server_heartbeat_port, self.multicast_group))
+        multicast_receive_thread = threading.Thread(target=self.listen_for_multicast)
 
         election_result_thread.start()
 
         broadcast_thread.start()
         
-        #multicast_send_thread.start()
-        #multicast_receive_thread.start()
+        multicast_send_thread.start()
+        multicast_receive_thread.start()
 
         broadcast_thread.join()
         election_result_thread.join()
         #Mulicast Send Thread End
-        #multicast_send_thread.join()
+        multicast_send_thread.join()
         #Multicast Receive Thread End
-        #multicast_receive_thread.join()
+        multicast_receive_thread.join()
        
         if(self.demand_election):
              self.peer_process()
