@@ -14,11 +14,12 @@ from tkinter import scrolledtext
 # Contact : st173207@stud.uni-stuttgart.de
 
 class ChatGUI:
-    def __init__(self, send_message_queue, reply_message_queue):
+    def __init__(self, send_message_queue, reply_message_queue,name):
+        self.name = name
         self.send_message_queue = send_message_queue
         self.reply_message_queue = reply_message_queue
         self.root = tk.Tk()
-        self.root.title("P2P Distributed Chat Application")
+        self.root.title(f"P2P Distributed Chat App [{self.name} : Online]")
 
         # Text area to display messages
         self.message_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=40, height=20)
@@ -104,7 +105,7 @@ class PeerDiscoveryProtocol:
 
 
 class ServerClientProcess(Process):
-    def __init__(self, send_message_queue, reply_message_queue):
+    def __init__(self, send_message_queue, reply_message_queue, name):
         super(ServerClientProcess, self).__init__()
         self.send_message_queue = send_message_queue
         self.reply_message_queue = reply_message_queue
@@ -129,7 +130,7 @@ class ServerClientProcess(Process):
         self.demand_election = False
         self.timeout = 5  # Timeout for socket operations in seconds
         # "User_".join(self.generate_hash())
-        self.name = input("Enter your name: ")
+        self.name = name #input("Enter your name: ")
 
         self.active_peers = []
         self.voting_participants = []
@@ -525,6 +526,7 @@ class ServerClientProcess(Process):
                 'content': message,
                 'vector_clock': self.vector_clock,
                 'sender_id': self.id,
+                'sender_name': self.name,
                 'type': message_type
             })
 
@@ -540,6 +542,7 @@ class ServerClientProcess(Process):
                 'content': message,
                 'vector_clock': self.vector_clock,
                 'sender_id': self.id,
+                'sender_name': self.name,
                 'type': message_type
             })
 
@@ -578,10 +581,10 @@ class ServerClientProcess(Process):
             if msg:
                 data = json.loads(msg.decode())
                 #print(f"'{data['content']}' received from {data['sender_id']} with timestamp: {data['vector_clock']}")
-                self.rec_event_vector(data['content'], data['vector_clock'], data['sender_id'], data['type'])
+                self.rec_event_vector(data['content'], data['vector_clock'], data['sender_id'],  data['sender_name'], data['type'])
                 #print(f"My new timestamp is: {self.vector_clock}")
                 
-    def rec_event_vector(self, received_message, received_vector_clock, sender_id, received_message_type):
+    def rec_event_vector(self, received_message, received_vector_clock, sender_id, received_message_type,sender_name):
         #print(message_rejection_test)
         if sender_id not in self.vector_clock:
                         # When a message is recieved from a peer for the first time, initialise its timestamp.
@@ -591,7 +594,7 @@ class ServerClientProcess(Process):
                             else:
                                 if peer not in self.vector_clock:
                                     self.vector_clock[peer] = timestamp
-                        self.deliver(received_message, received_vector_clock, sender_id)
+                        self.deliver(received_message, received_vector_clock, sender_id, sender_name)
        
         #check if incoming multicast is a negative acknowledgement
         if received_message_type == "NACK":
@@ -619,7 +622,7 @@ class ServerClientProcess(Process):
                 if received_vector_clock[self.id] not in self.displayed_own_message:
                     #Display message to the standard output
                     # Queue up the message
-                    display_message = f"{self.name} : {received_message}"
+                    display_message = f"{sender_name}:{received_message}"
                     print("check",display_message)
                     self.reply_message_queue.put(display_message)
                     print(f"Delivered message: '{received_message}' with vector clock: {received_vector_clock} from {sender_id}")
@@ -643,16 +646,17 @@ class ServerClientProcess(Process):
                         'content': received_message,
                         'vector_clock': received_vector_clock,
                         'sender_id': sender_id,
+                        'sender_name': sender_name,
                         'type': received_message_type
                     }) 
                 self.lock.release()
 
-    def deliver(self, message, received_vector_clock, sender_id):
+    def deliver(self, message, received_vector_clock, sender_id, sender_name):
         #Increament the appropriate element of the vector clock
         self.vector_clock[sender_id] += 1
         #Display message to the standard output
         # Queue up the message
-        display_message = f"{self.name}:{message}"
+        display_message = f"{sender_name}:{message}"
         print("check",display_message)
         self.reply_message_queue.put(display_message)
         print(f"Delivered message: '{message}' with vector clock: {received_vector_clock} from {sender_id}")   
@@ -1019,12 +1023,13 @@ if __name__ == "__main__":
     # Create a message queue
     send_message_queue = Queue()
     reply_message_queue = Queue()
+    name = input("Enter your name: ")
     
-    process = ServerClientProcess(send_message_queue,reply_message_queue)
+    process = ServerClientProcess(send_message_queue,reply_message_queue, name)
     process.start()
     
     # Create and start the GUI
-    gui = ChatGUI(send_message_queue,reply_message_queue)
+    gui = ChatGUI(send_message_queue,reply_message_queue, name)
     gui.start()
     
     process.join()
