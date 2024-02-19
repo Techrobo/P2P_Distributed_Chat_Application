@@ -1,4 +1,4 @@
-from multiprocessing  import Process, Lock
+from multiprocessing  import Process, Lock , Queue
 import socket
 import threading
 import time
@@ -6,12 +6,59 @@ import json
 import random
 import uuid
 import struct
+import tkinter as tk
+from tkinter import scrolledtext
 
 # PROJECT Peer-to-Peer Chat-based Distributed Application
 # Group 18 :  Ikenna Abara[3644968] and Shubham Gupta[3506475]
 # Contact : st173207@stud.uni-stuttgart.de
 
+class ChatGUI:
+    def __init__(self, send_message_queue, reply_message_queue):
+        self.send_message_queue = send_message_queue
+        self.reply_message_queue = reply_message_queue
+        self.root = tk.Tk()
+        self.root.title("P2P Distributed Chat Application")
 
+        # Text area to display messages
+        self.message_area = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, width=40, height=20)
+        self.message_area.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        # Entry field for user input
+        self.input_entry = tk.Entry(self.root, width=30)
+        self.input_entry.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+
+        # Button to send messages
+        self.send_button = tk.Button(self.root, text="Send", command=self.send_message)
+        self.send_button.grid(row=1, column=1, padx=10, pady=10, sticky="e")
+        
+        # Start a thread to continuously check for and display replies
+        threading.Thread(target=self.display_replies).start()
+
+    def send_message(self):
+        # Get the message from the entry field
+        message = self.input_entry.get()
+        if message:
+            # Queue up the message
+            self.send_message_queue.put(message)
+            # Append the message to the message area
+            #self.message_area.insert(tk.END, f"You: {message}\n")
+            # Clear the entry field
+            self.input_entry.delete(0, tk.END)
+            
+    def display_replies(self):
+        while True:
+            if not self.reply_message_queue.empty():
+                message = self.reply_message_queue.get()
+                if message:
+                    # Append the message to the message area
+                    self.message_area.insert(tk.END, f"{message}\n")
+                    self.message_area.see(tk.END)  # Scroll to the end
+            time.sleep(0.1)  # Short sleep to avoid busy waiting
+
+    def start(self):
+        self.root.mainloop()
+        
 class PeerDiscoveryProtocol:
     # Define message formats for registration, deregistration, and querying active peers.
     # Implement basic message parsing functions
@@ -57,8 +104,10 @@ class PeerDiscoveryProtocol:
 
 
 class ServerClientProcess(Process):
-    def __init__(self):
+    def __init__(self, send_message_queue, reply_message_queue):
         super(ServerClientProcess, self).__init__()
+        self.send_message_queue = send_message_queue
+        self.reply_message_queue = reply_message_queue
         self.id = self.generate_unique_id()
         self.ip =  self.get_ip_address() #socket.gethostbyname(socket.gethostname())
         self.heartbeat_port = self.get_available_port()
@@ -419,8 +468,24 @@ class ServerClientProcess(Process):
   #Sending Multicast#
   
     def test_multicast(self):
+        # count = 0
+        # num_list = [15, 20, 25, 30]
+        # while True:
+        #     if(not self.client_registeration_flag) :
+        #         continue
+        #     if(self.demand_election):
+        #         #listen_sock.close()
+        #         time.sleep(2)  # Wait for the socket to close
+        #         return
+        #     time.sleep(random.choice(num_list))
+        #     count += 1
+        #     message = f"{count}: Hello from {self.name} with ID: {self.id}"
+        #     print (message)
+        #     #self.send_multicast(message, "normal", "224.0.0.2", 7000)
+        #     self.send_multicast(message, "normal", self.multicast_group, self.server_heartbeat_port)
+        
         count = 0
-        num_list = [15, 20, 25, 30]
+
         while True:
             if(not self.client_registeration_flag) :
                 continue
@@ -428,12 +493,14 @@ class ServerClientProcess(Process):
                 #listen_sock.close()
                 time.sleep(2)  # Wait for the socket to close
                 return
-            time.sleep(random.choice(num_list))
-            count += 1
-            message = f"{count}: Hello from {self.name} with ID: {self.id}"
-            print (message)
-            #self.send_multicast(message, "normal", "224.0.0.2", 7000)
-            self.send_multicast(message, "normal", self.multicast_group, self.server_heartbeat_port)
+            if not self.send_message_queue.empty():
+                count += 1
+                message = self.send_message_queue.get()
+                
+                print(f"Sent message: {message}")
+                 #self.send_multicast(message, "normal", "224.0.0.2", 7000)
+                self.send_multicast(message, "normal", self.multicast_group, self.server_heartbeat_port)
+                time.sleep(1)     
             
     def send_multicast(self, message, message_type, multicast_group, port):
         multicast_send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -551,6 +618,10 @@ class ServerClientProcess(Process):
             if sender_id == self.id:
                 if received_vector_clock[self.id] not in self.displayed_own_message:
                     #Display message to the standard output
+                    # Queue up the message
+                    display_message = f"{self.name} : {received_message}"
+                    print("check",display_message)
+                    self.reply_message_queue.put(display_message)
                     print(f"Delivered message: '{received_message}' with vector clock: {received_vector_clock} from {sender_id}")
                     self.displayed_own_message.add(received_vector_clock[self.id])
                     print(f"displaed my message list: {self.displayed_own_message}")
@@ -580,6 +651,10 @@ class ServerClientProcess(Process):
         #Increament the appropriate element of the vector clock
         self.vector_clock[sender_id] += 1
         #Display message to the standard output
+        # Queue up the message
+        display_message = f"{self.name}:{message}"
+        print("check",display_message)
+        self.reply_message_queue.put(display_message)
         print(f"Delivered message: '{message}' with vector clock: {received_vector_clock} from {sender_id}")   
         
     def resend_missed_message(self, message, multicast_group, port):
@@ -941,6 +1016,15 @@ class ServerClientProcess(Process):
 
 
 if __name__ == "__main__":
-    process = ServerClientProcess()
+    # Create a message queue
+    send_message_queue = Queue()
+    reply_message_queue = Queue()
+    
+    process = ServerClientProcess(send_message_queue,reply_message_queue)
     process.start()
+    
+    # Create and start the GUI
+    gui = ChatGUI(send_message_queue,reply_message_queue)
+    gui.start()
+    
     process.join()
