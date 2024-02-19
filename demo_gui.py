@@ -581,7 +581,7 @@ class ServerClientProcess(Process):
             if msg:
                 data = json.loads(msg.decode())
                 #print(f"'{data['content']}' received from {data['sender_id']} with timestamp: {data['vector_clock']}")
-                self.rec_event_vector(data['content'], data['vector_clock'], data['sender_id'],  data['sender_name'], data['type'])
+                self.rec_event_vector(data['content'], data['vector_clock'], data['sender_id'], data['type'], data['sender_name'])
                 #print(f"My new timestamp is: {self.vector_clock}")
                 
     def rec_event_vector(self, received_message, received_vector_clock, sender_id, received_message_type,sender_name):
@@ -635,7 +635,7 @@ class ServerClientProcess(Process):
     
                 self.lock.acquire()
                 if self.can_deliver(received_vector_clock, sender_id):
-                    self.deliver(received_message, received_vector_clock, sender_id)
+                    self.deliver(received_message, received_vector_clock, sender_id, sender_name)
                     # Check the hold-back queue for any message that can now be delivered
                     self.check_hold_back_queue()
                 else:
@@ -703,7 +703,7 @@ class ServerClientProcess(Process):
         #check for message in the hold-back queue that can now be delivered
         for message in self.hold_back_queue:
             if self.can_deliver(message['vector_clock'], message['sender_id']):
-                self.deliver(message['content'], message['vector_clock'], message['sender_id'])
+                self.deliver(message['content'], message['vector_clock'], message['sender_id'], message['sender_name'])
                 self.hold_back_queue.remove(message)
    
                 
